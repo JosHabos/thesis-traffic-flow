@@ -1,0 +1,221 @@
+// Traffic Flow Model on one-way rectangle,
+// exanding on the right side.
+
+// ============================================================
+// Create Output Folder
+// ============================================================
+
+exec("mkdir -p expand_output");
+
+// ============================================================
+// Parameters
+// ============================================================
+
+// For visualization (slices)
+real xmin = 0.0;
+real xmax = 30.0;
+
+real rho0  = 10.0; // inflow density 
+real rhoc  = 50.0; // critical density
+real vfree = 50.0; // free-flow velocity
+
+real dt    = 0.01; // timestep
+real nu    = 5.0; // diffusion coefficient (D)
+real t     = 0.0; // initial time (starts at zero)
+
+// Defining the colour scaling for density values
+real minRho = -3;
+real maxRho = 10.4; 
+int nLevels = 40; // Number of color steps
+real[int] levels(nLevels + 1);
+
+for (int i = 0; i <= nLevels; i++){
+    levels[i] = minRho + (maxRho - minRho) * i / nLevels;
+}
+
+// ============================================================
+// Sampling Parameters
+// ============================================================
+
+int nSteps = 300; // Number of time steps
+int moduloTimeStepIndex = 10; // modify this if you only want to record selected time slices
+
+int Nsample = 300;
+real hx = (xmax - xmin) / (Nsample - 1);
+
+// ============================================================
+// Geometry Definition
+// ============================================================
+
+real [int] A(2), B(2), C(2), D(2), E(2), F(2);
+
+A=[0,5];
+B=[10,5];
+C=[30,0];
+D=[30,15];
+E=[10,10];
+F=[0,10];
+
+border c1(t=0,1){x=(1-t)*A[0]+t*B[0]; y=(1-t)*A[1]+t*B[1]; label=1;}
+border c2(t=0,1){x=(1-t)*B[0]+t*C[0]; y=(1-t)*B[1]+t*C[1]; label=2;}
+border c3(t=0,1){x=(1-t)*C[0]+t*D[0]; y=(1-t)*C[1]+t*D[1]; label=3;} // EXIT
+border c4(t=0,1){x=(1-t)*D[0]+t*E[0]; y=(1-t)*D[1]+t*E[1]; label=4;}
+border c5(t=0,1){x=(1-t)*E[0]+t*F[0]; y=(1-t)*E[1]+t*F[1]; label=5;}
+border c6(t=0,1){x=(1-t)*F[0]+t*A[0]; y=(1-t)*F[1]+t*A[1]; label=6;} // ENTRANCE
+
+// ============================================================
+// Mesh Construction
+// ============================================================
+
+mesh Th = buildmesh(
+    c1(10) + c2(25) + c3(20)
+  + c4(25) + c5(10) + c6(5)
+);
+
+plot(Th, wait=1, cmm="Mesh");
+
+// ============================================================
+// Finite Element Spaces
+// ============================================================
+
+fespace Vh(Th,P1);
+Vh rho, rhoold, rhoh;
+Vh n1,n2,u1,u2,u1visu,u2visu;
+Vh vrho;
+
+fespace Wh(Th,P2);
+Wh phi, phih;
+
+// ============================================================
+// Initial Density
+// ============================================================
+
+rho = 0;
+rhoold = rho;
+
+// ============================================================
+// Velocity Initialization (LWR)
+// ============================================================
+
+vrho = vfree * (1.-rho/rhoc); // Density-based initial velocity from LWR
+
+u1 = vrho*n1;
+u2 = vrho*n2;
+
+// ============================================================
+// Compute Direction Field via Laplace Problem
+// ============================================================
+
+problem Laplace(phi, phih) =
+
+    // weak form of Laplace equation
+    // ∫ grad(phi) · grad(test)
+    int2d(Th)(
+        dx(phi)*dx(phih)
+      + dy(phi)*dy(phih)
+    )
+
+    // EXIT
+  + on(c3, phi=1)
+    // ENTRANCE
+  + on(c6, phi=0);
+
+Laplace;
+
+plot(phi, wait=1, fill=1, value=1, cmm="Potential phi");
+
+// ============================================================
+// Direction field = normalized gradient
+// ============================================================
+
+Vh normGrad = sqrt(dx(phi)^2 + dy(phi)^2)+ 1e-8;//to prevent division by zero
+
+// unit vector components
+n1 = dx(phi) / normGrad;
+n2 = dy(phi) / normGrad;
+
+plot([n1,n2], wait=1, value=1, cmm="Flow direction");
+
+// ============================================================
+// Advection–Diffusion Problem (Lagrange–Galerkin)
+// ============================================================
+
+problem AdvectionDiffusion(rho,rhoh)
+=
+int2d(Th)( rho*rhoh/dt )
+- int2d(Th)( convect([u1,u2],-dt,rhoold)*rhoh/dt )
++ int2d(Th)(
+nu*(dx(rho)*dx(rhoh)+dy(rho)*dy(rhoh))
+)
++ int2d(Th)(
+rho*(dx(u1)+dy(u2))*rhoh
+)
+// SMOOTH inflow boundary condition (inject cars at ENTRANCE)
++ on(c6,rho=rho0);
+
+// ============================================================
+// Iterative Algorithm
+// ============================================================
+
+for(int it=0; it < nSteps; it++)
+{
+    t += dt;
+
+    AdvectionDiffusion;
+
+    rhoold = rho;
+
+    vrho = vfree * (1.-rho/rhoc);
+
+    u1 = vrho * n1;
+    u2 = vrho * n2;
+
+    // --------------------------------------------------------
+    // Save density profile every 10 time steps
+    // --------------------------------------------------------
+
+    if (it % moduloTimeStepIndex == 0){
+        string filename = "expand_output/density_k_" + it + ".dat";
+        ofstream file(filename);
+
+        // Initialize (xi, yi) with starting point (of slices)
+        real xi = xmin;
+        real yi = 7.5;
+
+        for (int i = 0; i < Nsample; i++){
+            xi = xmin + i * hx;
+            yi = 7.5;
+
+            // In the case that xi exceeds 30
+            if (xi > 30){
+              break;
+            }
+
+            real rhoVal = rho(xi, yi);
+
+            file << xi << " " << yi << " " << rhoVal << endl;
+            }
+
+        cout << "Saved file: " << filename << endl;
+        }
+
+    plot(rho,fill=1,value=0,viso=levels,
+         wait=1, dim=2,
+         cmm="Density at t="+t);
+}
+
+cout<<"Final time = "<<t<<endl;
+
+// ============================================================
+// Final Output
+// ============================================================
+
+plot(rho,fill=1,value=1,wait=1,cmm="Final traffic density");
+
+u1visu=u1/vfree;
+u2visu=u2/vfree;
+
+plot([u1visu,u2visu],value=0,cmm="Final traffic velocity (normalized)");
+
+cout<<"\nNormal end.\n";
+exit(0);

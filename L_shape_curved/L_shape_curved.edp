@@ -1,0 +1,246 @@
+cout << "\n";
+cout << "traffic():\n";
+cout << "  FreeFem++ version\n";
+cout << "  Flow enters at TOP of L-shape.\n";
+
+// ============================================================
+// Create Output Folder
+// ============================================================
+
+exec("mkdir -p L_shape_curved_output");
+
+// ============================================================
+// Parameters
+// ============================================================
+
+// For visualization (slices)
+real xmin = 2.0;
+real xmax = 26.0;
+
+real ymin = 2.0;
+real ymax = 11.07;
+
+real rho0  = 10.0; // inflow density
+real rhoc  = 50.0; // critical density
+real vfree = 50.0; // free-flow velocity   
+
+real dt    = 0.01; //timestep
+real nu    = 5.0;
+real t     = 0.0; //initial time (starts at zero)
+
+// Defining the color scaling for density values
+real minRho = -1.53;
+real maxRho = 12.5; 
+int nLevels = 40; // Number of color steps
+real[int] levels(nLevels + 1);
+
+for (int i = 0; i <= nLevels; i++){
+    levels[i] = minRho + (maxRho - minRho) * i / nLevels;
+}
+
+// ============================================================
+// Sampling Parameters
+// ============================================================
+
+int nSteps = 300;
+int moduloTimeStepIndex = 10; // modify this if you only want to record selected time slices
+
+int Nsample = 300;
+real hx = (xmax - xmin) / (Nsample - 1);
+
+// ============================================================
+// Geometry Definition
+// ============================================================
+
+real[int] A(2), B(2), C(2), D(2), E(2), F(2), G(2), H(2);
+
+// Angles in radians
+// (OUTER ARC ANGLES)
+real theta1 = atan2(12-4, 20-14); // approx 0.927
+real theta2 = atan2(12-4, 8-14);  // approx 2.214
+
+// (INNER ARC ANGLES)
+real theta3 = atan2(6-2, 10-14); // 135 degrees
+real theta4 = atan2(6-2, 18-14); // 45 degrees
+
+A  = [4,0];
+B  = [10,6];
+C  = [18,6];
+D  = [24,0];
+E  = [28,4];
+F  = [20,12];
+G  = [8,12];
+H  = [0,4];
+
+border c1(t=0,1){ x=(1-t)*A[0]+t*B[0];  y=(1-t)*A[1]+t*B[1];}
+border c2(t=theta3, theta4){ x=14 + sqrt(32)*cos(t); y=2 + sqrt(32)*sin(t); }  // INNER ARC, B to C
+border c3(t=0,1){ x=(1-t)*C[0]+t*D[0]; y=(1-t)*C[1]+t*D[1];}
+border c4(t=0,1){ x=(1-t)*D[0]+t*E[0];  y=(1-t)*D[1]+t*E[1];} // EXIT
+border c5(t=0,1){ x=(1-t)*E[0]+t*F[0]; y=(1-t)*E[1]+t*F[1];}
+border c6(t=theta1, theta2){ x=14 + 10*cos(t); y=4 + 10*sin(t); } // OUTER ARC, F to G
+border c7(t=0,1){ x=(1-t)*G[0]+t*H[0];  y=(1-t)*G[1]+t*H[1];}
+border c8(t=0,1){ x=(1-t)*H[0]+t*A[0];  y=(1-t)*H[1]+t*A[1]; } // ENTRANCE 
+
+// ============================================================
+// Mesh Construction
+// ============================================================
+
+mesh Th = buildmesh(
+    c1(15) + c2(10) + c3(15) // INNER CURVE, c2 = INNER ARC
+  + c4(9) //EXIT
+  + c5(15) + c6(15) + c7(15) // OUTER CURVE, c5 = OUTER ARC
+  + c8(9) // ENTRANCE
+);
+
+plot(Th, wait=1, cmm="Mesh", ps="traffic_mesh.ps");
+
+// ============================================================
+// Finite Element Spaces
+// ============================================================
+
+fespace Vh(Th, P1);
+Vh rho, rhoold, rhoh;
+Vh n1, n2, u1, u2, u1visu, u2visu, vrho;
+
+fespace Wh(Th, P2);
+Wh phi, phih;
+
+// ============================================================
+// Initial Density
+// ============================================================
+
+rho = 0;
+rhoold = rho;
+
+// ============================================================
+// Velocity Initialization (LWR)
+// ============================================================
+
+vrho = vfree * (1.0 - rho/rhoc);
+u1 = vrho * n1;
+u2 = vrho * n2;
+
+// ============================================================
+// Compute Direction Field via Laplace Problem
+// ============================================================
+
+problem Laplace(phi, phih) =
+    int2d(Th)( dx(phi)*dx(phih) + dy(phi)*dy(phih) )
+  + on(c4, phi=1)   // EXIT
+  + on(c8, phi=0);  // ENTRANCE
+
+Laplace;
+
+plot(phi, wait=1, fill=1, value=1, cmm="Potential phi");
+
+// ============================================================
+// Direction field = normalized gradient
+// ============================================================
+Vh normGrad = sqrt(dx(phi)^2 + dy(phi)^2) + 1e-8;
+
+n1 = dx(phi) / normGrad;
+n2 = dy(phi) / normGrad;
+
+plot([n1,n2], wait=1, value=1, cmm="Direction field");
+
+// ============================================================
+// Advection–Diffusion Problem (Lagrange–Galerkin)
+// ============================================================
+
+problem AdvectionDiffusion(rho, rhoh) =
+    int2d(Th)( rho*rhoh/dt )
+  - int2d(Th)( convect([u1,u2], -dt, rhoold)*rhoh/dt )
+  + int2d(Th)( nu*( dx(rho)*dx(rhoh)
+                  + dy(rho)*dy(rhoh) ) )
+  + int2d(Th)( rho*( dx(u1)+dy(u2) )*rhoh )
+  + on(c8, rho=rho0);   // inject cars at ENTRANCE
+
+// ============================================================
+// Iterative Algorithm
+// ============================================================
+
+for (int it=0; it < nSteps; it++)
+{
+    t += dt;
+
+    AdvectionDiffusion;
+
+    rhoold = rho;
+
+    // Update velocity
+    vrho = vfree*(1.0 - rho/rhoc);
+    u1 = vrho*n1;
+    u2 = vrho*n2;
+
+    // --------------------------------------------------------
+    // Save density profile every 10 time steps
+    // --------------------------------------------------------
+
+    if (it % moduloTimeStepIndex == 0)
+    {
+        string filename = "L_shape_curved_output/density_k_" + it + ".dat";
+        ofstream file(filename);
+
+        // Initialize (xi, yi)
+        real xi = 2;
+        real yi = 2;
+
+        for (int i = 0; i < Nsample; i++){
+           // Start at the upward long road
+            if (xi >= 2 && xi < 10) {
+              xi = xmin + i * hx;
+              yi = xi;
+            }
+            
+            // Then the curve itself
+            if (xi >= 10 && xi < 18){
+              real j = i - 100; //new counter for iterating thru xi
+              xi = 10 + j * hx;
+              yi = 4 + sqrt(52 - pow((xi - 14),2));
+            }
+
+            // Last at the downward long road
+            if (xi >= 18){
+              real j = i - 200; //new counter for iterating thru xi
+              xi = 18 + j * hx;
+              yi = 28 - xi;
+            }
+
+            // In the case that xi exceeds 26
+            if (xi > 26){
+              break;
+            }
+
+            real rhoVal = rho(xi, yi);
+
+            file << xi << " " << yi << " " << rhoVal << endl;
+        }
+ 
+
+        cout << "Saved file: " << filename << endl;
+    }
+
+    plot(rho, viso=levels, fill=1, value=0,
+         wait=0, dim=2,
+         cmm="Density at t="+t);
+}
+
+cout << "Final time = " << t << endl;
+
+// ============================================================
+// Final Output
+// ============================================================
+
+plot(rho, nbiso=40, fill=1, value=1,
+     ps="traffic_rho.ps",
+     cmm="Traffic density");
+
+u1visu = u1/vfree;
+u2visu = u2/vfree;
+
+plot([u1visu,u2visu], value=0,
+     ps="traffic_velocity.ps",
+     cmm="Traffic velocity (normalized)");
+
+cout << "\ntraffic(): Normal end of execution.\n";
+exit(0);

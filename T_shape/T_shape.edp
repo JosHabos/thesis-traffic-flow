@@ -1,0 +1,293 @@
+// Traffic Flow Model on T-shape with differing slants on either side.
+
+// Left slant has sharper corners, while right slant has smoother ones.
+// Both are adjustable.
+// (note: s = 3 will be used for the slices and density evolution plots)
+
+// ============================================================
+// Create Output Folder
+// ============================================================
+
+exec("mkdir -p T_shape_output");
+
+// ============================================================
+// Parameters
+// ============================================================
+
+real s = 3;   // slant size
+
+// For visualization (slices)
+real xmin = -20.0;
+real xmax = 20.0;
+real ymin = 20.0;
+real ymax = 3.0; // Road is going downwards
+
+real rho0  = 10.0; // inflow density
+real rhoc  = 50.0; // critical density
+real vfree = 50.0; // free-flow velocity   
+
+real dt    = 0.01; //timestep
+real nu    = 5.0;
+real t     = 0.0; //initial time (starts at zero)
+
+// Defining the color scaling for density values
+real minRho = -0.3;
+real maxRho = 18.51; 
+int nLevels = 40; // Number of color steps
+real[int] levels(nLevels + 1);
+
+for (int i = 0; i <= nLevels; i++){
+    levels[i] = minRho + (maxRho - minRho) * i / nLevels;
+}
+
+// ============================================================
+// Sampling Parameters
+// ============================================================
+
+int nSteps = 300; // Number of time steps
+int moduloTimeStepIndex = 10; // modify this if you only want to record selected time slices
+
+int Nsample = 300;
+real hx = (xmax - xmin) / (Nsample - 1);
+real hy = (ymin - ymax) / (Nsample - 1);
+
+// ============================================================
+// Geometry Definition
+// ============================================================
+
+real[int] A(2), B(2), C(2),
+          D1(2), D2(2),
+          E(2), F(2),
+          G(2), H(2),
+          I1(2), I2(2);
+
+// Bottom left
+A  = [-20,0];
+B  = [ 20,0];
+
+// Right outer vertical
+C  = [20,6];
+
+// Right inner slant (mirror of left)
+D1 = [ 6+2*s,6];
+D2 = [ 6,6+s];
+
+// Top right vertical
+E  = [ 6,20];
+
+// Top left vertical
+F  = [-6,20];
+
+// Left inner slant
+G  = [-6,6+2*s];
+H  = [-6-s,6];
+
+// Left outer vertical
+I1 = [-20,6];
+I2 = [-20,0];
+
+
+border c1(t=0,1){ x=(1-t)*A[0]+t*B[0];  y=0; }               // bottom
+border c2(t=0,1){ x=20; y=(1-t)*0+t*6; }                     // right outer vertical
+border c3(t=0,1){ x=(1-t)*20+t*D1[0]; y=6; }                 // right horizontal
+border c4(t=0,1){ x=(1-t)*D1[0]+t*D2[0];
+                  y=(1-t)*D1[1]+t*D2[1]; }                    // right slant
+border c5(t=0,1){ x=6; y=(1-t)*D2[1]+t*20; }                 // right vertical up
+border c6(t=0,1){ x=(1-t)*6+t*(-6); y=20; }                  // top horizontal
+border c7(t=0,1){ x=-6; y=(1-t)*20+t*G[1]; }                 // left vertical down
+border c8(t=0,1){ x=(1-t)*G[0]+t*H[0];
+                  y=(1-t)*G[1]+t*H[1]; }                      // left slant
+border c9(t=0,1){ x=(1-t)*H[0]+t*(-20); y=6; }               // left horizontal
+border c10(t=0,1){ x=-20; y=(1-t)*6+t*0; }                   // left outer vertical
+
+
+// ============================================================
+// Mesh Construction
+// ============================================================
+
+mesh Th = buildmesh(
+    c1(25) + c2(10) + c3(10)
+  + c4(10)
+  + c5(15) + c6(15)
+  + c7(12)
+  + c8(12)
+  + c9(12) + c10(10)
+);
+
+plot(Th, wait=1, ps="traffic_mesh_T.ps");
+
+// ============================================================
+// Finite Element Spaces
+// ============================================================
+
+fespace Vh(Th, P1);
+Vh rho, rhoold, rhoh;
+Vh n1, n2, u1, u2, u1visu, u2visu, vrho;
+
+fespace Wh(Th, P2);
+Wh phi, phih;
+
+// ============================================================
+// Initial Density
+// ============================================================
+
+rho = 0;           // start empty
+rhoold = rho;
+
+// ============================================================
+// Velocity Initialization (LWR)
+// ============================================================
+
+vrho = vfree * (1.0 - rho/rhoc);
+u1 = vrho * n1;
+u2 = vrho * n2;
+
+// ============================================================
+// Compute Direction Field via Laplace Problem
+// ============================================================
+
+problem Laplace(phi, phih) =
+    int2d(Th)( dx(phi)*dx(phih) + dy(phi)*dy(phih) )
+  + on(c6, phi=0)
+  + on(c2, phi=1)
+  + on(c10, phi=1);
+Laplace;
+
+plot(phi, wait=1, fill=1, value=1, cmm="Potential phi");
+
+// ============================================================
+// Direction field = normalized gradient
+// ============================================================
+
+Vh normGrad = sqrt(dx(phi)^2 + dy(phi)^2) + 1e-8;
+
+n1 = dx(phi) / normGrad;
+n2 = dy(phi) / normGrad;
+
+plot([n1,n2], wait=1, value=1, cmm="Direction field");
+
+// ============================================================
+// Advection–Diffusion Problem (Lagrange–Galerkin)
+// ============================================================
+
+problem AdvectionDiffusion(rho, rhoh) =
+    int2d(Th)( rho*rhoh/dt )
+  - int2d(Th)( convect([u1,u2], -dt, rhoold)*rhoh/dt )
+  + int2d(Th)( nu*( dx(rho)*dx(rhoh)
+                  + dy(rho)*dy(rhoh) ) )
+  + int2d(Th)( rho*( dx(u1)+dy(u2) )*rhoh )
+  + on(c6, rho=rho0);   // inject cars at ENTRANCE
+
+// ============================================================
+// Iterative Algorithm
+// ============================================================
+
+for (int it=0; it < nSteps; it++)
+{
+    t += dt;
+
+    AdvectionDiffusion;
+
+    rhoold = rho;
+
+    vrho = vfree*(1.0 - rho/rhoc);
+    u1 = vrho*n1;
+    u2 = vrho*n2;
+
+    // --------------------------------------------------------
+    // Save density profile every 10 time steps
+    // --------------------------------------------------------
+
+    if (it % moduloTimeStepIndex == 0){
+      string filename = "T_shape_output/density_k_" + it + ".dat";
+      ofstream file(filename);
+
+      // TWO MAIN SLICES
+      // S_1 = veering to the left and entering left road
+      // S_2 = veering to the right and entering right road
+
+      // Initialize (xi, yi) with starting point (of slices)
+      // For S_1
+      real xi1 = 0;
+      real yi1 = ymin;
+
+      // For S_2
+      real xi2 = xi1;
+      real yi2 = yi1;
+
+      for (int i = 0; i < Nsample; i++){
+        xi1 = 0;
+        yi1 = ymin - i * hy;
+
+        xi2 = xi1;
+        yi2 = yi1;
+
+        // For S_1, starting to veer left
+        if (yi1 <= 12){
+          real j = i - 141;
+          yi1 = 12 - j * hy * 1.5;
+          xi1 = (0.75 * yi1) - 9;
+        }
+
+        // For S_2, starting to veer right
+        if (yi2 <= 12){
+          real j = i - 141;
+          yi2 = 12 - j * hy * 1.5;
+          xi2 = 9 - (0.75 * yi2);
+        }
+
+        // For S_1, entering left road
+        if (yi1 <= 4){
+          real j = i - 235;
+          yi1 = 4 - j * hy;
+          xi1 = (14 * yi1) - 62;
+        }
+
+        // For S_2, entering right road
+        if (yi2 <= 4){
+          real j = i - 235;
+          yi2 = 4 - j * hy;
+          xi2 = 62 - (14 * yi2);
+        }
+
+        // In the case that yi is lower than the y-maximum
+        if (yi1 < ymax || yi2 < ymax){
+          break;
+        }
+
+        // For S_1
+        real rhoVal1 = rho(xi1, yi1);
+        // For S_2
+        real rhoVal2 = rho(xi2, yi2);
+
+        file << xi1 << " " << yi1 << " " << rhoVal1 << " " <<
+        xi2 << " " << yi2 << " " << rhoVal2 << endl;
+      }
+
+      cout << "Saved file: " << filename << endl;
+    }
+
+    plot(rho, viso=levels, fill=1, value=0,
+         wait=0, dim=2,
+         cmm="Density at t="+t);
+}
+
+cout << "Final time = " << t << endl;
+
+// ============================================================
+// Final Output
+// ============================================================
+
+plot(rho, nbiso=40, fill=1, value=1,
+     ps="traffic_rho.ps",
+     cmm="Traffic density");
+
+u1visu = u1/vfree;
+u2visu = u2/vfree;
+
+plot([u1visu,u2visu], value=0,
+     ps="traffic_velocity.ps",
+     cmm="Traffic velocity (normalized)");
+
+cout << "\ntraffic(): Normal end of execution.\n";
+exit(0);

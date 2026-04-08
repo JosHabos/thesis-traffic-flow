@@ -1,0 +1,296 @@
+// Traffic Flow Model on one-way rectangle,
+// with a branching-off road (on the right), 
+// with velocity smoothening
+
+// ============================================================
+// Create Output Folder
+// ============================================================
+
+exec("mkdir -p branching_off_smooth_output");
+
+// ============================================================
+// Parameters
+// ============================================================
+
+// For visualization (slices)
+real xmin = 0.0;
+real xmax = 60.0;
+
+real rho0  = 10.0; // inflow density 
+real rhoc  = 60.0; // critical density
+real vfree = 60.0; // free-flow velocity
+
+real dt    = 0.01; // timestep
+real nu    = 5.0; // diffusion coefficient (D)
+real t     = 0.0; // initial time (starts at zero)
+
+// Sigmoid parameters
+real xc = 20.0;     // slow down near branching road
+real k  = 3.0;     // steepness
+
+// Sigmoid function
+func S = 1.0/(1.0 + exp(-k*(x-xc)));
+
+// Defining the color scaling for density values
+real minRho = -1.0;
+real maxRho = 15.0; 
+int nLevels = 40; // Number of color steps
+real[int] levels(nLevels + 1);
+
+for (int i = 0; i <= nLevels; i++){
+    levels[i] = minRho + (maxRho - minRho) * i / nLevels;
+}
+
+// ============================================================
+// Sampling Parameters
+// ============================================================
+
+int nSteps = 300; // Number of time steps
+int moduloTimeStepIndex = 10; // modify this if you only want to record selected time slices
+
+int Nsample = 300;
+real hx = (xmax - xmin) / (Nsample - 1);
+
+// ============================================================
+// Geometry Definition
+// ============================================================
+
+real [int] A(2), B(2), C(2), D(2), E(2);
+real [int] F(2), G(2), H(2), I(2), J(2);
+real [int] K(2);
+
+A=[0,6];
+B=[20,6];
+C=[30,2];
+D=[40,0];
+E=[60,0];
+F=[60,3];
+G=[40,3]; 
+H=[30,6];
+I=[60,6]; 
+J=[60,11]; 
+K=[0,11];
+
+border c1(t=0,1){x=(1-t)*A[0]+t*B[0]; y=(1-t)*A[1]+t*B[1];}
+border c2(t=0,1){x=(1-t)*B[0]+t*C[0]; y=(1-t)*B[1]+t*C[1];} // BRANCHING
+border c3(t=0,1){x=(1-t)*C[0]+t*D[0]; y=(1-t)*C[1]+t*D[1];}
+border c4(t=0,1){x=(1-t)*D[0]+t*E[0]; y=(1-t)*D[1]+t*E[1];}
+border c5(t=0,1){x=(1-t)*E[0]+t*F[0]; y=(1-t)*E[1]+t*F[1];} // BRANCHING EXIT
+border c6(t=0,1){x=(1-t)*F[0]+t*G[0]; y=(1-t)*F[1]+t*G[1];}
+border c7(t=0,1){x=(1-t)*G[0]+t*H[0]; y=(1-t)*G[1]+t*H[1];} // END OF BANCHING
+border c8(t=0,1){x=(1-t)*H[0]+t*I[0]; y=(1-t)*H[1]+t*I[1];}
+border c9(t=0,1){x=(1-t)*I[0]+t*J[0]; y=(1-t)*I[1]+t*J[1];} // EXIT
+border c10(t=0,1){x=(1-t)*J[0]+t*K[0]; y=(1-t)*J[1]+t*K[1];}
+border c11(t=0,1){x=(1-t)*K[0]+t*A[0]; y=(1-t)*K[1]+t*A[1];} // ENTRANCE
+
+// ============================================================
+// Mesh Construction
+// ============================================================
+
+mesh Th = buildmesh(
+    c1(10)
+  + c2(10) + c3(10) + c4(15) // BRANCHING
+  + c5(5) // BRANCHING EXIT
+  + c6(15) + c7(10) //END OF BRANCHING
+  + c8(15) 
+  + c9(5) // EXIT
+  + c10(30)
+  + c11(5) //ENTRANCE
+);
+
+plot(Th,wait=1,cmm="Mesh");
+
+// ============================================================
+// Finite Element Spaces
+// ============================================================
+
+fespace Vh(Th,P1);
+fespace Wh(Th,P2);
+
+Vh rho,rhoold,rhoh;
+Vh n1,n2,u1,u2;
+Vh vrho;
+Vh vtraffic,vl,vr;
+Vh u1visu,u2visu;
+
+Wh phi,phih;
+
+// ============================================================
+// Initial Density
+// ============================================================
+
+rho = 0;
+rhoold = rho;
+
+// ============================================================
+// Velocity Initialization (LWR + Sigmoid smoothing)
+// ============================================================
+
+Vh v0 = vfree * (1.-rho/rhoc); // Density-based initial velocity from LWR
+Vh v1 = 0.7 * v0; // Lower velocity as the second velocity that vehicles can take
+
+vrho = v0 + (v1 - v0) * S; // Sigmoid smoothing between v0 and v1
+
+u1 = vrho*n1;
+u2 = vrho*n2;
+
+// ============================================================
+// Compute Direction Field via Laplace Problem
+// ============================================================
+
+problem Laplace(phi,phih)
+=
+int2d(Th)(
+dx(phi)*dx(phih)
++dy(phi)*dy(phih)
+)
++ on(c11,phi=0)   // ENTRANCE
++ on(c5,phi=1)    // EXIT
++ on(c9,phi=1);   // EXIT
+
+Laplace;
+
+plot(phi,fill=1,value=1,wait=1,cmm="Potential phi");
+
+// ============================================================
+// Direction field = normalized gradient
+// ============================================================
+
+Vh normGrad = sqrt(dx(phi)^2+dy(phi)^2)+1e-8;
+
+n1 = dx(phi)/normGrad;
+n2 = dy(phi)/normGrad;
+
+plot([n1,n2],wait=1,cmm="Direction");
+
+// ============================================================
+// Advection–Diffusion Problem (Lagrange–Galerkin)
+// ============================================================
+
+problem AdvectionDiffusion(rho,rhoh)
+=
+int2d(Th)(
+rho*rhoh/dt
+)
+-int2d(Th)(
+convect([u1,u2],-dt,rhoold)*rhoh/dt
+)
++int2d(Th)(
+nu*(dx(rho)*dx(rhoh)+dy(rho)*dy(rhoh))
+)
++int2d(Th)(
+rho*(dx(u1)+dy(u2))*rhoh
+)
+// SMOOTH inflow boundary condition (inject cars at ENTRANCE)
++ on(c11,rho=rho0);
+
+// ============================================================
+// Iterative Algorithm
+// ============================================================
+
+for(int it=0;it < nSteps;it++)
+{
+  t+=dt;
+
+  AdvectionDiffusion;
+
+  rhoold=rho;
+
+  // Sigmoid blending for velocity
+  v0 = vfree * (1.-rho/rhoc);
+  v1 = 0.7 * v0;
+  vrho = v0 + (v1 - v0) * S;
+
+  u1 = vrho * n1;
+  u2 = vrho * n2;
+
+  // --------------------------------------------------------
+  // Save density profile every 10 time steps
+  // --------------------------------------------------------
+
+  if (it % moduloTimeStepIndex == 0){
+      string filename = "branching_off_smooth_output/density_k_" + it + ".dat";
+      ofstream file(filename);
+
+      // TWO MAIN SLICES
+      // S_1 = straight line of main rectangular road
+      // S_2 = straight line into the branching road (multiple lines)
+
+      // Initialize (xi, yi) with starting point (of slices)
+      // For S_1
+      real xi1 = xmin;
+      real yi1 = 8.5;
+
+      // For S_2
+      real xi2 = xmin;
+      real yi2 = 8.5;
+
+      for (int i = 0; i < Nsample; i++){
+        xi1 = xmin + i * hx;
+        yi1 = 8.5;
+
+        xi2 = xmin + i * hx;
+        yi2 = 8.5;
+
+        // For S_2, when reaching the branching road
+        if (xi2 >= 24){
+          real j = i - 120;
+          xi2 = 24 + j * hx;
+          yi2 = -0.75 * xi2 + 26.5;
+        }
+
+        // For S_2, when reaching deeper into the branching road
+        if (xi2 >= 30){
+          real j = i - 150;
+          xi2 = 30 + j * hx;
+          yi2 = -0.25 * xi2 + 11.5;
+        }
+
+        // For S_2, when reaching the horizontal part of the branching road
+        if (xi2 >= 40){
+          real j = i - 200;
+          xi2 = 40 + j * hx;
+          yi2 = 1.5;
+        }
+
+        // In the case that xi exceeds 60
+        if (xi1 > 60 || xi2 > 60){
+          break;
+        }
+
+        // For S_1
+        real rhoVal1 = rho(xi1, yi1);
+        // For S_2
+        real rhoVal2 = rho(xi2, yi2);
+
+        file << xi1 << " " << yi1 << " " << rhoVal1 << " " <<
+        xi2 << " " << yi2 << " " << rhoVal2 << endl;
+      }
+
+      cout << "Saved file: " << filename << endl;
+  }
+
+  plot(rho,
+  fill=1,
+  value=0,
+  wait=1,
+  viso = levels,
+  cmm="Density t="+t);
+}
+
+cout<<"Final time="<<t<<endl;
+
+// ============================================================
+// Final Output
+// ============================================================
+
+plot(rho,fill=1,value=1,wait=1,viso = levels,cmm="Final traffic density");
+
+// normalized velocity
+u1visu=u1/vfree;
+u2visu=u2/vfree;
+
+plot([u1visu,u2visu],value=0,cmm="Traffic velocity (normalized)");
+
+cout<<"\nNormal end.\n";
+exit(0);

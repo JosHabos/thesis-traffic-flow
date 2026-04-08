@@ -1,0 +1,231 @@
+// Traffic Flow Model on an I-shape,
+// where both roads have opposing flow directions
+// with a middle 'U-turn' slot.
+
+// ============================================================
+// Create Output Folder
+// ============================================================
+
+exec("mkdir -p I_shape_output");
+
+// ============================================================
+// Parameters
+// ============================================================
+
+// For visualization (slices)
+real xmin = 0.0;
+real xmax = 10.0;
+
+real rho0  = 10.0; // inflow density 
+real rhoc  = 50.0; // critical density
+real vfree = 40.0; // free-flow velocity
+
+real dt    = 0.01; // timestep
+real nu    = 5.0; // diffusion coefficient (D)
+real t     = 0.0; // initial time (starts at zero)
+
+// Defining the color scaling for density values
+real minRho = -0.13;
+real maxRho = 15.8; 
+int nLevels = 40; // Number of color steps
+real[int] levels(nLevels + 1);
+
+for (int i = 0; i <= nLevels; i++){
+    levels[i] = minRho + (maxRho - minRho) * i / nLevels;
+}
+
+// ============================================================
+// Sampling Parameters
+// ============================================================
+
+int nSteps = 300; // Number of time steps
+int moduloTimeStepIndex = 10; // modify this if you only want to record selected time slices
+
+int Nsample = 300;
+real hx = (xmax - xmin) / (Nsample - 1);
+
+// ============================================================
+// Geometry Definition
+// ============================================================
+
+real [int] A(2), B(2), C(2), D(2), E(2);
+real [int] F(2), G(2), H(2), I(2), J(2);
+real [int] K(2), L(2), M(2), Ng(2);
+
+A=[0,0]; 
+B=[10,0]; C=[10, 1]; //Bottom
+D=[6,1]; //exit bottom right
+E=[6,1.5]; 
+F=[10, 1.5]; G=[10, 2.5]; //enter upper right
+H=[0,2.5]; I=[0, 1.5]; //exit upper left
+J=[4, 1.5]; 
+K=[4, 1]; 
+L=[0, 1]; //enter lower left
+
+border c1(t=0,1) {x=(1-t)*A[0]+t*B[0]; y=(1-t)*A[1]+t*B[1];}
+border c2(t=0,1) {x=(1-t)*B[0]+t*C[0]; y=(1-t)*B[1]+t*C[1];}
+border c3(t=0,1) {x=(1-t)*C[0]+t*D[0]; y=(1-t)*C[1]+t*D[1];}
+border c4(t=0,1) {x=(1-t)*D[0]+t*E[0]; y=(1-t)*D[1]+t*E[1];}
+border c5(t=0,1) {x=(1-t)*E[0]+t*F[0]; y=(1-t)*E[1]+t*F[1];}
+border c6(t=0,1) {x=(1-t)*F[0]+t*G[0]; y=(1-t)*F[1]+t*G[1];}
+border c7(t=0,1) {x=(1-t)*G[0]+t*H[0]; y=(1-t)*G[1]+t*H[1];}
+border c8(t=0,1) {x=(1-t)*H[0]+t*I[0]; y=(1-t)*H[1]+t*I[1];}
+border c9(t=0,1) {x=(1-t)*I[0]+t*J[0]; y=(1-t)*I[1]+t*J[1];}
+border c10(t=0,1) {x=(1-t)*J[0]+t*K[0]; y=(1-t)*J[1]+t*K[1];}
+border c11(t=0,1) {x=(1-t)*K[0]+t*L[0]; y=(1-t)*K[1]+t*L[1];}
+border c12(t=0,1) {x=(1-t)*L[0]+t*A[0]; y=(1-t)*L[1]+t*A[1];}
+
+// ============================================================
+// Mesh Construction
+// ============================================================
+
+mesh Th = buildmesh ( 
+    c1(20) + c2(6) + c3(10) + c4(4) + c5(10) + c6(6)
+  + c7(20) + c8(6) + c9(10) + c10(4) + c11(10) + c12(6)
+);
+plot(Th, wait=1, cmm="Mesh");
+
+// ============================================================
+// Finite Element Spaces
+// ============================================================
+
+fespace Vh(Th, P1);
+Vh rho, rhoold, rhoh;
+Vh n1, n2, u1, u2, u1visu, u2visu, vrho;
+
+fespace Wh(Th, P2);
+Wh phi, phih;
+
+// ============================================================
+// Initial Density
+// ============================================================
+
+rho = 0;
+rhoold = rho;
+
+// ============================================================
+// Velocity Initialization (LWR)
+// ============================================================
+
+vrho = vfree * (1.0 - rho/rhoc);
+u1 = vrho * n1;
+u2 = vrho * n2;
+
+// ============================================================
+// Compute Direction Field via Laplace Problem
+// ============================================================
+
+problem Laplace(phi, phih) =
+    int2d(Th)( dx(phi)*dx(phih) + dy(phi)*dy(phih) )
+  + on(c2, phi=0)   // BOTTOM = EXIT
+  + on(c12, phi=1)  // BOTTOM = ENTRANCE
+  + on(c6, phi=1)   // TOP = ENTRANCE
+  + on(c8, phi=0);  // TOP = EXIT
+
+Laplace;
+
+plot(phi, wait=1, fill=1, value=1, cmm="Potential phi");
+
+// ============================================================
+// Direction field = normalized gradient
+// ============================================================
+
+Vh normGrad = sqrt(dx(phi)^2 + dy(phi)^2) + 1e-8;
+
+n1 = -dx(phi) / normGrad;
+n2 = -dy(phi) / normGrad;
+
+plot([n1,n2], wait=1, value=1, cmm="Flow direction");
+
+// ============================================================
+// Advection–Diffusion Problem (Lagrange–Galerkin)
+// ============================================================
+
+problem AdvectionDiffusion(rho, rhoh) =
+    int2d(Th)( rho*rhoh/dt )
+  - int2d(Th)( convect([u1,u2], -dt, rhoold)*rhoh/dt )
+  + int2d(Th)( nu*( dx(rho)*dx(rhoh)
+                  + dy(rho)*dy(rhoh) ) )
+  + int2d(Th)( rho*( dx(u1)+dy(u2) )*rhoh )
+  // inject cars from ENTRANCES
+  + on(c12, rho=rho0)
+  + on(c6, rho=rho0);
+
+// ============================================================
+// Iterative Algorithm
+// ============================================================
+
+for (int it=0; it < nSteps; it++)
+{
+    t += dt;
+
+    AdvectionDiffusion;
+
+    rhoold = rho;
+
+    vrho = vfree*(1.0 - rho/rhoc);
+    u1 = vrho*n1;
+    u2 = vrho*n2;
+
+  // --------------------------------------------------------
+  // Save density profile every 10 time steps
+  // --------------------------------------------------------
+
+  if (it % moduloTimeStepIndex == 0){
+      string filename = "I_shape_output/density_k_" + it + ".dat";
+      ofstream file(filename);
+
+      // TWO MAIN SLICES
+      // S_1 = top road, from right to left
+      // S_2 = bottom road, from left to rigth
+
+      // Initialize (xi, yi) with starting point (of slices)
+      // For S_1
+      real xi1 = xmax;
+      real yi1 = 2;
+
+      // For S_2
+      real xi2 = xmin;
+      real yi2 = 0.5;
+
+      for (int i = 0; i < Nsample; i++){
+        xi1 = xmax - i * hx;
+        xi2 = xmin + i * hx;
+
+        // In the case that xi1 falls below 0, or xi2 exceeds 10
+        if (xi1 < 0 || xi2 > 10){
+          break;
+        }
+
+        // For S_1
+        real rhoVal1 = rho(xi1, yi1);
+        // For S_2
+        real rhoVal2 = rho(xi2, yi2);
+
+        file << xi1 << " " << yi1 << " " << rhoVal1 << " " <<
+        xi2 << " " << yi2 << " " << rhoVal2 << endl;
+      }
+
+      cout << "Saved file: " << filename << endl;
+  }
+
+    plot(rho, viso=levels, fill=1, value=0,
+         wait=1, dim=2,
+         cmm="Density at t="+t);
+}
+
+cout << "Final time = " << t << endl;
+
+// ============================================================
+// Final Output
+// ============================================================
+
+plot(rho,fill=1,value=1,wait=1,cmm="Final traffic density");
+
+u1visu=u1/vfree;
+u2visu=u2/vfree;
+
+plot([u1visu,u2visu],value=0,cmm="Traffic velocity (normalized)");
+
+cout << "\ntraffic(): Normal end of execution.\n";
+exit(0);

@@ -1,0 +1,257 @@
+// Traffic Flow Model on a roundabout,
+// with pairs of entrance and exit roads
+// at each side. Improvements have been
+// made to the shape to influence
+// more vehicles to adhere to the
+// determined flow direction.
+
+// ============================================================
+// Create Output Folder
+// ============================================================
+
+exec("mkdir -p rotonda_output");
+
+// ============================================================
+// Parameters
+// ============================================================
+
+real rho0  = 10.0; // inflow density 
+real rhoc  = 50.0; // critical density
+real vfree = 20.0; // free-flow velocity
+
+real dt    = 0.01; // timestep
+real nu    = 5.0; // diffusion coefficient (D)
+real t     = 0.0; // initial time (starts at zero)
+
+// Defining the colour scaling for density values
+real minRho = -0.13;
+real maxRho = 20.8; 
+int nLevels = 40; // Number of color steps
+real[int] levels(nLevels + 1);
+
+for (int i = 0; i <= nLevels; i++){
+    levels[i] = minRho + (maxRho - minRho) * i / nLevels;
+}
+
+// ============================================================
+// Sampling Parameters
+// ============================================================
+
+int nSteps = 300; // Number of time steps
+int moduloTimeStepIndex = 10; // modify this if you only want to record selected time slices
+
+// ============================================================
+// Geometry Definition
+// ============================================================
+
+real[int] A(2), B(2), C(2), C1(2), D(2), E(2);
+real[int] P5(2), P6(2), P7(2), P8(2), P9(2);
+real[int] P10(2), P101(2), P11(2), P12(2), P13(2), P14(2);
+real[int] P15(2), P16(2), P17(2), P18(2), P181(2), P19(2);
+real[int] P20(2), P21(2), P22(2), P23(2), P24(2);
+real[int] P25(2), P26(2), P261(2), P27(2), P28(2), P29(2);
+real[int] P30(2), P31(2);
+
+A  = [0,0];     B  = [1,0];     C  = [1,5];   C1 = [3,6];  D  = [2,5];
+E  = [2,0];     P5  = [3,0];     P6  = [3,4.5];     P7  = [5.5,7];
+P8  = [10,7];    P9  = [10,8];    P10 = [5,8];  P101 = [4,10];   P11 = [5,9];
+P12 = [10,9];    P13 = [10,10];   P14 = [5.5,10];    P15 = [3,12.5];
+P16 = [3,17];    P17 = [2,17];    P18 = [2,12];  P181 = [0,11];  P19 = [1,12];
+P20 = [1,17];    P21 = [0,17];    P22 = [0,12.5];    P23 = [-2.5,10];
+P24 = [-7,10];   P25 = [-7,9];    P26 = [-2,9];  P261 = [-1.0,7];  P27 = [-2,8];
+P28 = [-7,8];    P29 = [-7,7];    P30 = [-2.5,7];    P31 = [0,4.5];
+
+border c1(t=0,1){x=A[0]*(1-t)+B[0]*t; y=A[1]*(1-t)+B[1]*t; label=1;}
+border c2(t=0,1){x=B[0]*(1-t)+C[0]*t; y=B[1]*(1-t)+C[1]*t; label=2;}
+border c3(t=0,1){x=C[0]*(1-t)+C1[0]*t; y=C[1]*(1-t)+C1[1]*t; label=3;}
+border c3a(t=0,1){x=C1[0]*(1-t)+D[0]*t; y=C1[1]*(1-t)+D[1]*t; label=3.1;}
+border c4(t=0,1){x=D[0]*(1-t)+E[0]*t; y=D[1]*(1-t)+E[1]*t; label=4;}
+border c5(t=0,1){x=E[0]*(1-t)+P5[0]*t; y=E[1]*(1-t)+P5[1]*t; label=5;}
+border c6(t=0,1){x=P5[0]*(1-t)+P6[0]*t; y=P5[1]*(1-t)+P6[1]*t; label=6;}
+border c7(t=0,1){x=P6[0]*(1-t)+P7[0]*t; y=P6[1]*(1-t)+P7[1]*t; label=7;}
+border c8(t=0,1){x=P7[0]*(1-t)+P8[0]*t; y=P7[1]*(1-t)+P8[1]*t; label=8;}
+border c9(t=0,1){x=P8[0]*(1-t)+P9[0]*t; y=P8[1]*(1-t)+P9[1]*t; label=9;}
+border c10(t=0,1){x=P9[0]*(1-t)+P10[0]*t; y=P9[1]*(1-t)+P10[1]*t; label=10;}
+border c10a(t=0,1){x=P10[0]*(1-t)+P101[0]*t; y=P10[1]*(1-t)+P101[1]*t; label=10.1;}
+border c11(t=0,1){x=P101[0]*(1-t)+P11[0]*t; y=P101[1]*(1-t)+P11[1]*t; label=11;}
+border c12(t=0,1){x=P11[0]*(1-t)+P12[0]*t; y=P11[1]*(1-t)+P12[1]*t; label=12;}
+border c13(t=0,1){x=P12[0]*(1-t)+P13[0]*t; y=P12[1]*(1-t)+P13[1]*t; label=13;}
+border c14(t=0,1){x=P13[0]*(1-t)+P14[0]*t; y=P13[1]*(1-t)+P14[1]*t; label=14;}
+border c15(t=0,1){x=P14[0]*(1-t)+P15[0]*t; y=P14[1]*(1-t)+P15[1]*t; label=15;}
+border c16(t=0,1){x=P15[0]*(1-t)+P16[0]*t; y=P15[1]*(1-t)+P16[1]*t; label=16;}
+border c17(t=0,1){x=P16[0]*(1-t)+P17[0]*t; y=P16[1]*(1-t)+P17[1]*t; label=17;}
+border c18(t=0,1){x=P17[0]*(1-t)+P18[0]*t; y=P17[1]*(1-t)+P18[1]*t; label=18;}
+border c18a(t=0,1){x=P18[0]*(1-t)+P181[0]*t; y=P18[1]*(1-t)+P181[1]*t; label=18.1;}
+border c19(t=0,1){x=P181[0]*(1-t)+P19[0]*t; y=P181[1]*(1-t)+P19[1]*t; label=19;}
+border c20(t=0,1){x=P19[0]*(1-t)+P20[0]*t; y=P19[1]*(1-t)+P20[1]*t; label=20;}
+border c21(t=0,1){x=P20[0]*(1-t)+P21[0]*t; y=P20[1]*(1-t)+P21[1]*t; label=21;}
+border c22(t=0,1){x=P21[0]*(1-t)+P22[0]*t; y=P21[1]*(1-t)+P22[1]*t; label=22;}
+border c23(t=0,1){x=P22[0]*(1-t)+P23[0]*t; y=P22[1]*(1-t)+P23[1]*t; label=23;}
+border c24(t=0,1){x=P23[0]*(1-t)+P24[0]*t; y=P23[1]*(1-t)+P24[1]*t; label=24;}
+border c25(t=0,1){x=P24[0]*(1-t)+P25[0]*t; y=P24[1]*(1-t)+P25[1]*t; label=25;}
+border c26(t=0,1){x=P25[0]*(1-t)+P26[0]*t; y=P25[1]*(1-t)+P26[1]*t; label=26;}
+border c26a(t=0,1){x=P26[0]*(1-t)+P261[0]*t; y=P26[1]*(1-t)+P261[1]*t; label=26.1;}
+border c27(t=0,1){x=P261[0]*(1-t)+P27[0]*t; y=P261[1]*(1-t)+P27[1]*t; label=27;}
+border c28(t=0,1){x=P27[0]*(1-t)+P28[0]*t; y=P27[1]*(1-t)+P28[1]*t; label=28;}
+border c29(t=0,1){x=P28[0]*(1-t)+P29[0]*t; y=P28[1]*(1-t)+P29[1]*t; label=29;}
+border c30(t=0,1){x=P29[0]*(1-t)+P30[0]*t; y=P29[1]*(1-t)+P30[1]*t; label=30;}
+border c31(t=0,1){x=P30[0]*(1-t)+P31[0]*t; y=P30[1]*(1-t)+P31[1]*t; label=31;}
+border c32(t=0,1){x=P31[0]*(1-t)+A[0]*t; y=P31[1]*(1-t)+A[1]*t; label=32;}
+
+// Inner circular island
+real xc=1.5;
+real yc=8.5;
+real Rin=2;
+
+border rotonda(t=0,2*pi)
+{
+    x=xc+Rin*cos(-t);
+    y=yc+Rin*sin(-t);
+    label=100;
+}
+
+// ============================================================
+// Mesh Construction
+// ============================================================
+
+mesh Th = buildmesh(
+c1(15)+c2(15)+c3(15)+c3a(2)+c4(15)+c5(15)
++c6(15)+c7(15)+c8(15)+c9(15)+c10(15)+c10a(15)
++c11(15)+c12(15)+c13(15)+c14(15)
++c15(15)+c16(15)+c17(15)+c18(15)+c18a(15)
++c19(15)+c20(15)+c21(15)+c22(15)
++c23(15)+c24(15)+c25(15)+c26(15)+c26a(15)
++c27(15)+c28(15)+c29(15)+c30(15)
++c31(15)+c32(15)
++rotonda(40)
+);
+
+plot(Th,wait=1,cmm="Mesh");
+
+// ============================================================
+// Finite Element Spaces
+// ============================================================
+
+fespace Vh(Th,P1);
+fespace Wh(Th,P2);
+
+Vh rho,rhoold,rhoh;
+Vh n1,n2,u1,u2,u1visu, u2visu, vrho;
+Wh phi,phih;
+
+// ============================================================
+// Initial Density
+// ============================================================
+
+rho = 0;
+rhoold = 0;
+
+// ============================================================
+// Velocity Initialization (LWR)
+// ============================================================
+
+vrho=vfree*(1-rho/rhoc);
+
+u1=vrho*n1;
+u2=vrho*n2;
+
+// ============================================================
+// Compute Direction Field via Laplace Problem
+// ============================================================
+
+problem Laplace(phi,phih)=
+int2d(Th)(
+dx(phi)*dx(phih)
++dy(phi)*dy(phih)
+)
++on(5,13,21,29,phi=1)
++on(1,9,17,25,phi=0);
+
+Laplace;
+
+plot(phi, wait=1, fill=1, value=1, cmm="Potential phi");
+
+// ============================================================
+// Direction field = normalized gradient
+// ============================================================
+
+Vh norm = sqrt(dx(phi)^2 + dy(phi)^2) + 1e-8;
+
+Vh road1 = -dx(phi)/norm;
+Vh road2 = -dy(phi)/norm;
+
+/* tangential CCW around circle */
+Vh r = sqrt((x-xc)^2 + (y-yc)^2) + 1e-8;
+
+Vh t1 = -(y-yc)/r;
+Vh t2 =  (x-xc)/r;
+
+/* blending */
+real Rblend = 3.0;
+Vh w = exp(-pow(r/Rblend,2));
+
+/* combine */
+n1 = (1-w)*road1 + w*t1;
+n2 = (1-w)*road2 + w*t2;
+
+/* normalize (correct syntax) */
+Vh norm2 = sqrt(n1^2 + n2^2) + 1e-8;
+
+n1 = n1 / norm2;
+n2 = n2 / norm2;
+
+plot([n1,n2], wait=1, value=1, cmm="Flow direction");
+
+// ============================================================
+// Advection–Diffusion Problem (Lagrange–Galerkin)
+// ============================================================
+
+problem AdvDiff(rho,rhoh)=
+int2d(Th)(rho*rhoh/dt)
+-int2d(Th)(
+convect([u1,u2],-dt,rhoold)*rhoh/dt
+)
++int2d(Th)(
+nu*(dx(rho)*dx(rhoh)
++dy(rho)*dy(rhoh))
+)
++int2d(Th)(
+rho*(dx(u1)+dy(u2))*rhoh
+)
+// inject cars from ENTRANCES
++on(5,13,21,29,rho=rho0);
+
+// ============================================================
+// Iterative Algorithm
+// ============================================================
+
+for (int it=0; it < nSteps; it++)
+{
+    t+=dt;
+
+    AdvDiff;
+
+    rhoold=rho;
+
+    vrho=vfree*(1-rho/rhoc);
+    u1=vrho*n1;
+    u2=vrho*n2;
+
+    plot(rho,fill=1,value=1,viso=levels,dim=2,wait=0,cmm="Density at t="+t);
+}
+
+cout<<"Final time="<<t<<endl;
+
+// ============================================================
+// Final Output
+// ============================================================
+
+plot(rho,fill=1,value=1,wait=1,cmm="Final traffic density");
+
+u1visu=u1/vfree;
+u2visu=u2/vfree;
+
+plot([u1visu,u2visu],value=1,cmm="Traffic velocity (normalized)");
+
+cout << "\ntraffic(): Normal end of execution.\n";
+exit(0);
