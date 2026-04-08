@@ -1,2 +1,9 @@
-# thesis-traffic-flow
-Contains FreeFEM++ and Jupyter Notebook files for simulations of traffic flow and generating visualization.
+# TITLE
+
+### General Description
+
+### Prerequisites
+
+### Simulations (edp files)
+
+### Visualization (ipynb files)
